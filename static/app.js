@@ -216,6 +216,7 @@ let settings = {
         controlStripWidth: 0.33,
         controlStripEnabled: true,
         noteMode: 'zones',
+        facingMode: 'user',
         mirror: true
     }
 };
@@ -1019,7 +1020,7 @@ function updatePlaybackUI() {
 async function initWebcam() {
     try {
         webcamStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            video: { facingMode: settings.webcam.facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
             audio: false
         });
         webcamVideo.srcObject = webcamStream;
@@ -1666,6 +1667,21 @@ function updateWebcamStatus(cls, text) {
 function setupWebcamControls() {
     webcamVideo = document.getElementById('webcamVideo');
     webcamOverlay = document.getElementById('webcamOverlay');
+
+    const flipBtn = document.getElementById('camFlipBtn');
+    if (flipBtn) {
+        flipBtn.addEventListener('click', () => {
+            settings.webcam.facingMode = settings.webcam.facingMode === 'user' ? 'environment' : 'user';
+            const mirror = settings.webcam.facingMode === 'user';
+            settings.webcam.mirror = mirror;
+            if (webcamVideo) webcamVideo.style.transform = mirror ? 'scaleX(-1)' : 'none';
+            if (webcamOverlay) webcamOverlay.style.transform = mirror ? 'scaleX(-1)' : 'none';
+            if (inputMode === 'webcam') {
+                stopWebcam();
+                initWebcam();
+            }
+        });
+    }
 
     document.querySelectorAll('#inputModeToggle .mode-btn').forEach(btn => {
         btn.addEventListener('click', () => setInputMode(btn.dataset.mode));

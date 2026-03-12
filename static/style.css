@@ -948,6 +948,17 @@ body {
     color: var(--accent-red, #f87171);
 }
 
+.cam-flip-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    color: var(--text-primary);
+    line-height: 1;
+}
+
 .webcam-panel {
     border: 1px solid var(--border-color);
     border-radius: 8px;
