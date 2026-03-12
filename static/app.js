@@ -1020,7 +1020,7 @@ function updatePlaybackUI() {
 async function initWebcam() {
     try {
         webcamStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: settings.webcam.facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+            video: { facingMode: settings.webcam.facingMode === 'environment' ? { exact: 'environment' } : 'user', width: { ideal: 640 }, height: { ideal: 480 } },
             audio: false
         });
         webcamVideo.srcObject = webcamStream;
@@ -1648,6 +1648,7 @@ function setInputMode(mode) {
 
     if (mode === 'webcam') {
         if (!audioContext) initAudio();
+        if (audioContext && audioContext.state === 'suspended') audioContext.resume();
         panel.style.display = '';
         assignNotesToGrid();
         initWebcam();
