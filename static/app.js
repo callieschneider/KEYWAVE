@@ -1048,6 +1048,8 @@ async function initWebcam() {
             analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
         }
 
+        assignNotesToGrid();
+
         webcamBaseReverb = settings.reverb;
         webcamBaseCutoff = settings.filterCutoff;
 
@@ -1227,9 +1229,7 @@ function assignNotesToGrid() {
         ? Math.round(canvasW * settings.webcam.controlStripWidth)
         : 0;
     const gridW = canvasW - stripPx;
-    const cellW = Math.floor(gridW / cols);
-    const cellH = Math.floor(canvasH / rows);
-    const geom = { rows, cols, stripPx, cellW, cellH, canvasW, canvasH };
+    const geom = { rows, cols, stripPx, gridW, canvasW, canvasH };
 
     switch (settings.webcam.noteMode) {
         case 'zones':    assignZonesMode(geom); break;
@@ -1239,12 +1239,15 @@ function assignNotesToGrid() {
 }
 
 function makeCell(r, c, geom, noteData, decay) {
+    const x = geom.stripPx + Math.round(c * geom.gridW / geom.cols);
+    const nextX = geom.stripPx + Math.round((c + 1) * geom.gridW / geom.cols);
+    const y = Math.round(r * geom.canvasH / geom.rows);
+    const nextY = Math.round((r + 1) * geom.canvasH / geom.rows);
     return {
         row: r, col: c,
-        x: geom.stripPx + c * geom.cellW,
-        y: r * geom.cellH,
-        w: geom.cellW,
-        h: geom.cellH,
+        x, y,
+        w: nextX - x,
+        h: nextY - y,
         noteData,
         decay: decay || undefined,
         motionEnergy: 0,
@@ -1644,7 +1647,6 @@ function setInputMode(mode) {
         if (!audioContext) initAudio();
         if (audioContext && audioContext.state === 'suspended') audioContext.resume();
         panel.style.display = '';
-        assignNotesToGrid();
         initWebcam();
     } else {
         panel.style.display = 'none';
