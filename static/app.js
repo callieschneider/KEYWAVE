@@ -20,7 +20,7 @@
 
 const WS_URL = 'ws://localhost:8765';
 const C4_FREQ = 261.63;
-const MAX_VOICES = 6;
+const MAX_VOICES = 12;
 
 // Note names for display
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -204,7 +204,18 @@ let settings = {
     tempo: 120,
     quantizeGrid: '1/8',
     // Playback
-    playbackSpeed: 1
+    playbackSpeed: 1,
+    // Webcam motion
+    webcam: {
+        enabled: false,
+        gridRows: 2,
+        gridCols: 2,
+        threshold: 0.15,
+        sensitivity: 1.0,
+        cooldownMs: 150,
+        controlStripWidth: 0.33,
+        mirror: true
+    }
 };
 
 let modifiers = { shift: false, ctrl: false, alt: false, cmd: false, caps_lock: false };
@@ -248,6 +259,20 @@ let isPoweredOn = true;
 
 // Keyboard range (1-3 octaves visible)
 let keyboardRange = 2;
+
+// Webcam / motion state
+let inputMode = 'keyboard'; // 'keyboard' | 'webcam'
+let webcamStream = null;
+let webcamVideo = null;    // ref to <video> element, set in setupWebcamControls
+let webcamOverlay = null;  // ref to overlay <canvas>, set in setupWebcamControls
+let analysisCanvas = null; // offscreen low-res canvas for frame differencing
+let analysisCtx = null;
+let prevFrameData = null;  // Uint8ClampedArray from previous frame
+let motionLoopId = null;   // requestAnimationFrame handle
+let gridCells = [];
+let controlStripState = { sustainLevel: 0, sustainOn: false, swellLevel: 0 };
+let webcamBaseReverb = 0;
+let webcamBaseCutoff = 20000;
 
 // =============================================================================
 // AUDIO ENGINE
@@ -933,7 +958,7 @@ function playNextCharacter(text) {
     if (char === ' ') key = 'space';
     else if (char === '\n') key = 'enter';
     
-    handleKeyDown(key, modifiers, true, currentIndex);
+    handleKeyDown(key, modifiers, true, currentIndex, true);
     
     // Update cursor position
     updatePlaybackCursor(playbackIndex);
@@ -986,12 +1011,515 @@ function updatePlaybackUI() {
 }
 
 // =============================================================================
+// WEBCAM / INPUT MODE
+// =============================================================================
+
+async function initWebcam() {
+    try {
+        webcamStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false
+        });
+        webcamVideo.srcObject = webcamStream;
+
+        webcamStream.getVideoTracks()[0].onended = () => {
+            console.warn('Camera disconnected');
+            setInputMode('keyboard');
+        };
+
+        if (!analysisCanvas) {
+            analysisCanvas = document.createElement('canvas');
+            analysisCanvas.width = 160;
+            analysisCanvas.height = 120;
+            analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+        }
+
+        webcamBaseReverb = settings.reverb;
+        webcamBaseCutoff = settings.filterCutoff;
+
+        webcamVideo.addEventListener('playing', function onPlaying() {
+            webcamVideo.removeEventListener('playing', onPlaying);
+            startMotionLoop();
+        }, { once: true });
+
+        updateWebcamStatus('active', 'Camera active');
+    } catch (err) {
+        console.error('Webcam access denied:', err);
+        updateWebcamStatus('error', 'Camera denied');
+        setInputMode('keyboard');
+    }
+}
+
+function stopWebcam() {
+    stopMotionLoop();
+    if (webcamStream) {
+        webcamStream.getTracks().forEach(t => t.stop());
+        webcamStream = null;
+    }
+    if (webcamVideo) {
+        webcamVideo.srcObject = null;
+    }
+    prevFrameData = null;
+    controlStripState = { sustainLevel: 0, sustainOn: false, swellLevel: 0 };
+    sustainPedal = false;
+    restoreBaseEffects();
+    updateWebcamStatus('', '');
+}
+
+const ANALYSIS_FPS = 25;
+const FRAME_INTERVAL = 1000 / ANALYSIS_FPS;
+let lastFrameTime = 0;
+
+function startMotionLoop() {
+    lastFrameTime = 0;
+    motionLoopId = requestAnimationFrame(analyzeFrame);
+}
+
+function analyzeFrame(timestamp) {
+    motionLoopId = requestAnimationFrame(analyzeFrame);
+
+    if (timestamp - lastFrameTime < FRAME_INTERVAL) return;
+    lastFrameTime = timestamp;
+
+    if (!webcamVideo || webcamVideo.readyState < 2) return;
+
+    const w = analysisCanvas.width;
+    const h = analysisCanvas.height;
+    analysisCtx.drawImage(webcamVideo, 0, 0, w, h);
+    const currentFrame = analysisCtx.getImageData(0, 0, w, h);
+
+    if (prevFrameData) {
+        const motionMap = computeMotionMap(currentFrame.data, prevFrameData);
+        evaluateNoteGrid(motionMap);
+        evaluateControlStrip(motionMap);
+        renderOverlay();
+    }
+
+    prevFrameData = currentFrame.data;
+}
+
+function computeMotionMap(current, previous) {
+    const len = current.length / 4;
+    const map = new Float32Array(len);
+    const sens = settings.webcam.sensitivity;
+    for (let i = 0; i < len; i++) {
+        const idx = i * 4;
+        const curGray = (current[idx] + current[idx + 1] + current[idx + 2]) / 3;
+        const prevGray = (previous[idx] + previous[idx + 1] + previous[idx + 2]) / 3;
+        map[i] = Math.min(1, (Math.abs(curGray - prevGray) / 255) * sens);
+    }
+    return map;
+}
+
+function stopMotionLoop() {
+    if (motionLoopId) {
+        cancelAnimationFrame(motionLoopId);
+        motionLoopId = null;
+    }
+    prevFrameData = null;
+}
+
+function evaluateNoteGrid(motionMap) {
+    if (!gridCells.length) return;
+    const now = performance.now();
+    const w = analysisCanvas.width;
+    let triggeredThisFrame = [];
+
+    for (const cell of gridCells) {
+        let sum = 0;
+        let count = 0;
+        for (let py = cell.y; py < cell.y + cell.h; py++) {
+            for (let px = cell.x; px < cell.x + cell.w; px++) {
+                sum += motionMap[py * w + px];
+                count++;
+            }
+        }
+        const rawEnergy = count > 0 ? sum / count : 0;
+        cell.motionEnergy = cell.motionEnergy * 0.6 + rawEnergy * 0.4;
+
+        if (cell.motionEnergy > settings.webcam.threshold && !cell.isActive &&
+            (now - cell.lastTriggerTime) > settings.webcam.cooldownMs) {
+            triggeredThisFrame.push(cell);
+        }
+        if (cell.motionEnergy < settings.webcam.threshold * 0.7) {
+            cell.isActive = false;
+        }
+    }
+
+    triggeredThisFrame.sort((a, b) => b.motionEnergy - a.motionEnergy);
+    for (let i = 0; i < Math.min(3, triggeredThisFrame.length); i++) {
+        const cell = triggeredThisFrame[i];
+        triggerCellNote(cell);
+        cell.isActive = true;
+        cell.lastTriggerTime = now;
+    }
+}
+
+function triggerCellNote(cell) {
+    const velocity = mapMotionToVelocity(cell.motionEnergy);
+    playNote(cell.noteData, { velocity, sustained: sustainPedal });
+    updateNoteDisplay(cell.noteData.noteName, cell.noteData);
+    highlightPianoKey(cell.noteData);
+}
+
+function mapMotionToVelocity(energy) {
+    const minVel = 0.12;
+    const maxVel = 0.55;
+    const clamped = Math.max(0, Math.min(1, (energy - 0.1) / 0.7));
+    return minVel + clamped * (maxVel - minVel);
+}
+
+function assignNotesToGrid() {
+    const rows = settings.webcam.gridRows;
+    const cols = settings.webcam.gridCols;
+    const scale = settings.scale;
+    const baseOctave = settings.baseOctave;
+    const intervals = SCALES[scale].intervals;
+
+    const canvasW = analysisCanvas ? analysisCanvas.width : 160;
+    const canvasH = analysisCanvas ? analysisCanvas.height : 120;
+    const stripPx = Math.round(canvasW * settings.webcam.controlStripWidth);
+    const gridW = canvasW - stripPx;
+
+    const cellW = Math.floor(gridW / cols);
+    const cellH = Math.floor(canvasH / rows);
+
+    gridCells = [];
+    let noteIndex = 0;
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const degree = noteIndex % intervals.length;
+            const octOffset = Math.floor(noteIndex / intervals.length);
+            const semitone = intervals[degree];
+            const octave = baseOctave + octOffset;
+            const frequency = C4_FREQ * Math.pow(2, (semitone + (octave - 4) * 12) / 12);
+            gridCells.push({
+                row: r, col: c,
+                x: stripPx + c * cellW,
+                y: r * cellH,
+                w: cellW,
+                h: cellH,
+                noteData: {
+                    frequency,
+                    noteName: NOTE_NAMES[semitone % 12],
+                    octave,
+                    semitone: semitone + (octave - 4) * 12
+                },
+                motionEnergy: 0,
+                lastTriggerTime: 0,
+                isActive: false
+            });
+            noteIndex++;
+        }
+    }
+}
+
+function evaluateControlStrip(motionMap) {
+    if (!analysisCanvas) return;
+    const w = analysisCanvas.width;
+    const h = analysisCanvas.height;
+    const stripEnd = Math.round(w * settings.webcam.controlStripWidth);
+    const laneMid = Math.round(stripEnd / 2);
+    const minMotionForPresence = 0.05;
+
+    let susWeightedY = 0, susTotalMotion = 0;
+    let swlWeightedY = 0, swlTotalMotion = 0;
+
+    for (let py = 0; py < h; py++) {
+        for (let px = 0; px < laneMid; px++) {
+            const val = motionMap[py * w + px];
+            susWeightedY += val * py;
+            susTotalMotion += val;
+        }
+        for (let px = laneMid; px < stripEnd; px++) {
+            const val = motionMap[py * w + px];
+            swlWeightedY += val * py;
+            swlTotalMotion += val;
+        }
+    }
+
+    const susCellCount = laneMid * h;
+    const swlCellCount = (stripEnd - laneMid) * h;
+    const susAvg = susCellCount > 0 ? susTotalMotion / susCellCount : 0;
+    const swlAvg = swlCellCount > 0 ? swlTotalMotion / swlCellCount : 0;
+
+    if (susAvg > minMotionForPresence && susTotalMotion > 0) {
+        const centroidY = susWeightedY / susTotalMotion;
+        controlStripState.sustainLevel = 1 - (centroidY / h);
+    } else {
+        controlStripState.sustainLevel = Math.max(0, controlStripState.sustainLevel - 0.05);
+    }
+
+    if (swlAvg > minMotionForPresence && swlTotalMotion > 0) {
+        const centroidY = swlWeightedY / swlTotalMotion;
+        controlStripState.swellLevel = 1 - (centroidY / h);
+    } else {
+        controlStripState.swellLevel = Math.max(0, controlStripState.swellLevel - 0.05);
+    }
+
+    const sl = controlStripState.sustainLevel;
+    if (sl > 0.65 && !controlStripState.sustainOn) {
+        controlStripState.sustainOn = true;
+        sustainPedal = true;
+    }
+    if (sl < 0.35 && controlStripState.sustainOn) {
+        controlStripState.sustainOn = false;
+        sustainPedal = false;
+        releaseAllSustainedVoices();
+    }
+
+    const swl = controlStripState.swellLevel;
+    settings.reverb = webcamBaseReverb + swl * (1.0 - webcamBaseReverb) * 0.6;
+    settings.filterCutoff = webcamBaseCutoff + swl * (20000 - webcamBaseCutoff) * 0.4;
+    updateEffects();
+    updateModulatedSliders();
+}
+
+function releaseAllSustainedVoices() {
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    const releaseTime = 0.3;
+    for (let i = voicePool.length - 1; i >= 0; i--) {
+        const voice = voicePool[i];
+        if (voice.sustained) {
+            voice.gainNode.gain.cancelScheduledValues(now);
+            voice.gainNode.gain.setTargetAtTime(0.001, now, releaseTime / 3);
+            voice.oscillators.forEach(osc => {
+                try { osc.stop(now + releaseTime + 0.1); } catch (e) {}
+            });
+            voicePool.splice(i, 1);
+        }
+    }
+}
+
+function updateModulatedSliders() {
+    const reverbSlider = document.getElementById('reverbAmount');
+    const filterSlider = document.getElementById('filterCutoff');
+    const reverbDisplay = document.getElementById('reverbValue');
+    const filterDisplay = document.getElementById('filterValue');
+    const isModulated = controlStripState.swellLevel > 0.01;
+
+    if (reverbSlider) {
+        reverbSlider.value = Math.round(settings.reverb * 100);
+        if (reverbDisplay) reverbDisplay.textContent = Math.round(settings.reverb * 100) + '%';
+        reverbSlider.parentElement.classList.toggle('slider-modulated', isModulated);
+        if (isModulated) {
+            reverbSlider.parentElement.style.setProperty('--base-pos',
+                ((webcamBaseReverb * 100) / 100 * 100) + '%');
+        }
+    }
+    if (filterSlider) {
+        filterSlider.value = Math.round(settings.filterCutoff);
+        const display = settings.filterCutoff >= 10000 ?
+            (settings.filterCutoff / 1000).toFixed(0) + 'k' : Math.round(settings.filterCutoff) + '';
+        if (filterDisplay) filterDisplay.textContent = display;
+        filterSlider.parentElement.classList.toggle('slider-modulated', isModulated);
+        if (isModulated) {
+            filterSlider.parentElement.style.setProperty('--base-pos',
+                ((webcamBaseCutoff - 200) / (20000 - 200) * 100) + '%');
+        }
+    }
+}
+
+function restoreBaseEffects() {
+    settings.reverb = webcamBaseReverb;
+    settings.filterCutoff = webcamBaseCutoff;
+    updateEffects();
+
+    const reverbSlider = document.getElementById('reverbAmount');
+    const filterSlider = document.getElementById('filterCutoff');
+    const reverbDisplay = document.getElementById('reverbValue');
+    const filterDisplay = document.getElementById('filterValue');
+
+    if (reverbSlider) {
+        reverbSlider.value = Math.round(webcamBaseReverb * 100);
+        if (reverbDisplay) reverbDisplay.textContent = Math.round(webcamBaseReverb * 100) + '%';
+        reverbSlider.parentElement.classList.remove('slider-modulated');
+    }
+    if (filterSlider) {
+        filterSlider.value = Math.round(webcamBaseCutoff);
+        const display = webcamBaseCutoff >= 10000 ?
+            (webcamBaseCutoff / 1000).toFixed(0) + 'k' : Math.round(webcamBaseCutoff) + '';
+        if (filterDisplay) filterDisplay.textContent = display;
+        filterSlider.parentElement.classList.remove('slider-modulated');
+    }
+}
+
+function renderOverlay() {
+    if (!webcamOverlay) return;
+    const oc = webcamOverlay;
+    const video = webcamVideo;
+    if (!video || video.readyState < 2) return;
+
+    if (oc.width !== video.videoWidth || oc.height !== video.videoHeight) {
+        oc.width = video.videoWidth || 640;
+        oc.height = video.videoHeight || 480;
+    }
+
+    const ctx = oc.getContext('2d');
+    ctx.clearRect(0, 0, oc.width, oc.height);
+
+    const scaleX = oc.width / (analysisCanvas ? analysisCanvas.width : 160);
+    const scaleY = oc.height / (analysisCanvas ? analysisCanvas.height : 120);
+
+    const stripPx = Math.round((analysisCanvas ? analysisCanvas.width : 160) * settings.webcam.controlStripWidth);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(stripPx * scaleX, 0);
+    ctx.lineTo(stripPx * scaleX, oc.height);
+    ctx.stroke();
+
+    const laneMidPx = Math.round(stripPx / 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(laneMidPx * scaleX, 0);
+    ctx.lineTo(laneMidPx * scaleX, oc.height);
+    ctx.stroke();
+
+    const susH = (1 - controlStripState.sustainLevel) * oc.height;
+    const susColor = controlStripState.sustainOn ? 'rgba(236,72,153,0.4)' : 'rgba(236,72,153,0.15)';
+    ctx.fillStyle = susColor;
+    ctx.fillRect(0, susH, laneMidPx * scaleX, oc.height - susH);
+
+    const swlH = (1 - controlStripState.swellLevel) * oc.height;
+    ctx.fillStyle = `rgba(168,85,247,${0.1 + controlStripState.swellLevel * 0.3})`;
+    ctx.fillRect(laneMidPx * scaleX, swlH, (stripPx - laneMidPx) * scaleX, oc.height - swlH);
+
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.translate(-oc.width, 0);
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(236,72,153,0.7)';
+    ctx.fillText('SUS', oc.width - (laneMidPx * scaleX / 2), 4);
+    ctx.fillStyle = 'rgba(168,85,247,0.7)';
+    ctx.fillText('SWL', oc.width - ((laneMidPx + (stripPx - laneMidPx) / 2) * scaleX), 4);
+    ctx.restore();
+
+    for (const cell of gridCells) {
+        const cx = cell.x * scaleX;
+        const cy = cell.y * scaleY;
+        const cw = cell.w * scaleX;
+        const ch = cell.h * scaleY;
+
+        if (cell.isActive) {
+            const alpha = 0.15 + cell.motionEnergy * 0.35;
+            ctx.fillStyle = `rgba(0, 245, 212, ${alpha})`;
+            ctx.fillRect(cx, cy, cw, ch);
+        }
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cx, cy, cw, ch);
+
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.translate(-oc.width, 0);
+        const label = cell.noteData.noteName + cell.noteData.octave;
+        ctx.font = '12px JetBrains Mono, monospace';
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const mirroredX = oc.width - (cx + cw / 2);
+        ctx.fillText(label, mirroredX, cy + ch / 2);
+        ctx.restore();
+    }
+}
+
+function setInputMode(mode) {
+    if (mode === inputMode) return;
+    inputMode = mode;
+
+    const panel = document.getElementById('webcamPanel');
+    const btns = document.querySelectorAll('.mode-btn');
+    btns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+
+    if (mode === 'webcam') {
+        if (!audioContext) initAudio();
+        panel.style.display = '';
+        assignNotesToGrid();
+        initWebcam();
+    } else {
+        panel.style.display = 'none';
+        stopWebcam();
+    }
+}
+
+function updateWebcamStatus(cls, text) {
+    const el = document.getElementById('webcamStatus');
+    if (!el) return;
+    el.className = 'webcam-status' + (cls ? ' ' + cls : '');
+    el.textContent = text || '';
+}
+
+function setupWebcamControls() {
+    webcamVideo = document.getElementById('webcamVideo');
+    webcamOverlay = document.getElementById('webcamOverlay');
+
+    const toggleBtns = document.querySelectorAll('#inputModeToggle .mode-btn');
+    toggleBtns.forEach(btn => {
+        btn.addEventListener('click', () => setInputMode(btn.dataset.mode));
+    });
+
+    const scaleSelect = document.getElementById('scaleSelect');
+    if (scaleSelect) {
+        scaleSelect.addEventListener('change', () => {
+            if (inputMode === 'webcam') assignNotesToGrid();
+        });
+    }
+
+    const gridRowsEl = document.getElementById('webcamGridRows');
+    if (gridRowsEl) {
+        gridRowsEl.addEventListener('change', (e) => {
+            settings.webcam.gridRows = parseInt(e.target.value);
+            if (inputMode === 'webcam') assignNotesToGrid();
+        });
+    }
+
+    const gridColsEl = document.getElementById('webcamGridCols');
+    if (gridColsEl) {
+        gridColsEl.addEventListener('change', (e) => {
+            settings.webcam.gridCols = parseInt(e.target.value);
+            if (inputMode === 'webcam') assignNotesToGrid();
+        });
+    }
+
+    const thresholdEl = document.getElementById('webcamThreshold');
+    if (thresholdEl) {
+        thresholdEl.addEventListener('input', (e) => {
+            settings.webcam.threshold = parseInt(e.target.value) / 100;
+            document.getElementById('thresholdValue').textContent = settings.webcam.threshold.toFixed(2);
+        });
+    }
+
+    const sensitivityEl = document.getElementById('webcamSensitivity');
+    if (sensitivityEl) {
+        sensitivityEl.addEventListener('input', (e) => {
+            settings.webcam.sensitivity = parseInt(e.target.value) / 100;
+            document.getElementById('sensitivityValue').textContent = settings.webcam.sensitivity.toFixed(1);
+        });
+    }
+
+    const stripWidthEl = document.getElementById('webcamStripWidth');
+    if (stripWidthEl) {
+        stripWidthEl.addEventListener('input', (e) => {
+            settings.webcam.controlStripWidth = parseInt(e.target.value) / 100;
+            document.getElementById('stripWidthValue').textContent = e.target.value + '%';
+            if (inputMode === 'webcam') assignNotesToGrid();
+        });
+    }
+}
+
+// =============================================================================
 // KEY HANDLING
 // =============================================================================
 
-function handleKeyDown(key, mods = modifiers, fromTypingBox = false, textIndex = undefined) {
-    // Don't play sounds when powered off
+function handleKeyDown(key, mods = modifiers, fromTypingBox = false, textIndex = undefined, fromPlayback = false) {
     if (!isPoweredOn) return;
+    if (inputMode === 'webcam' && !fromPlayback) return;
     
     if (!audioContext) {
         initAudio();
@@ -1537,6 +2065,7 @@ function setupControls() {
         reverbSlider.addEventListener('input', (e) => {
             settings.reverb = parseInt(e.target.value) / 100;
             document.getElementById('reverbValue').textContent = e.target.value + '%';
+            if (inputMode === 'webcam') webcamBaseReverb = settings.reverb;
             updateEffects();
         });
     }
@@ -1566,6 +2095,7 @@ function setupControls() {
             const display = settings.filterCutoff >= 10000 ? 
                 (settings.filterCutoff / 1000).toFixed(0) + 'k' : settings.filterCutoff + '';
             document.getElementById('filterValue').textContent = display;
+            if (inputMode === 'webcam') webcamBaseCutoff = settings.filterCutoff;
             updateEffects();
         });
     }
@@ -1804,6 +2334,11 @@ function setupPowerButton() {
             // Stop any playback
             stopPlayback();
             
+            // Stop webcam if active
+            if (inputMode === 'webcam') {
+                setInputMode('keyboard');
+            }
+            
             // Suspend audio context
             if (audioContext && audioContext.state === 'running') {
                 audioContext.suspend();
@@ -1841,6 +2376,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupControls();
     setupTypingBox();
     setupPowerButton();
+    setupWebcamControls();
     connectWebSocket();
     
     applyEffectPreset(settings.effectPreset);
