@@ -1619,22 +1619,6 @@ function renderOverlay() {
         ctx.strokeStyle = 'rgba(255,255,255,0.15)';
         ctx.lineWidth = 1;
         ctx.strokeRect(cx, cy, cw, ch);
-
-        if (cell.w * scaleX > 24 && cell.h * scaleY > 16) {
-            ctx.save();
-            ctx.scale(-1, 1);
-            ctx.translate(-oc.width, 0);
-            const notes = Array.isArray(cell.noteData) ? cell.noteData : [cell.noteData];
-            const label = notes[0].noteName + notes[0].octave;
-            const fontSize = Math.max(8, Math.min(12, cell.w * scaleX / 4));
-            ctx.font = `${fontSize}px JetBrains Mono, monospace`;
-            ctx.fillStyle = 'rgba(255,255,255,0.6)';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            const mirroredX = oc.width - (cx + cw / 2);
-            ctx.fillText(label, mirroredX, cy + ch / 2);
-            ctx.restore();
-        }
     }
 }
 

@@ -83,52 +83,52 @@
                 <div class="webcam-preview" id="webcamPreview">
                     <video id="webcamVideo" autoplay playsinline webkit-playsinline muted></video>
                     <canvas id="webcamOverlay"></canvas>
+                    <div class="webcam-controls" id="webcamControls">
+                        <div class="control-group">
+                            <label for="webcamNoteMode">Mode</label>
+                            <select id="webcamNoteMode">
+                                <option value="zones" selected>Zones</option>
+                                <option value="chords">Chords</option>
+                                <option value="harmonic">Harmonic</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="webcamGridRows">Rows</label>
+                            <input type="number" id="webcamGridRows" min="1" max="24" value="2" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label for="webcamGridCols">Cols</label>
+                            <input type="number" id="webcamGridCols" min="1" max="36" value="2" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label for="webcamThreshold">Thresh</label>
+                            <div class="range-wrapper">
+                                <input type="range" id="webcamThreshold" min="1" max="80" value="15" step="1">
+                                <span id="thresholdValue">0.15</span>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label for="webcamSensitivity">Sens</label>
+                            <div class="range-wrapper">
+                                <input type="range" id="webcamSensitivity" min="25" max="1000" value="100" step="25">
+                                <span id="sensitivityValue">1.0</span>
+                            </div>
+                        </div>
+                        <div class="control-group toggle-group-inline">
+                            <label for="webcamStripToggle">Strip</label>
+                            <input type="checkbox" id="webcamStripToggle" class="toggle-input" checked>
+                            <label for="webcamStripToggle" class="toggle-label-small"></label>
+                        </div>
+                        <div class="control-group" id="stripWidthGroup">
+                            <label for="webcamStripWidth">Width</label>
+                            <div class="range-wrapper">
+                                <input type="range" id="webcamStripWidth" min="20" max="50" value="33" step="5">
+                                <span id="stripWidthValue">33%</span>
+                            </div>
+                        </div>
+                    </div>
                     <button class="cam-fullscreen-btn" id="camFullscreenBtn" title="Fullscreen">[ ]</button>
                     <button class="cam-exit-fullscreen-btn" id="camExitFullscreenBtn" title="Exit Fullscreen">✕</button>
-                </div>
-                <div class="webcam-controls">
-                    <div class="control-group">
-                        <label for="webcamNoteMode">Mode</label>
-                        <select id="webcamNoteMode">
-                            <option value="zones" selected>Zones</option>
-                            <option value="chords">Chords</option>
-                            <option value="harmonic">Harmonic</option>
-                        </select>
-                    </div>
-                    <div class="control-group">
-                        <label for="webcamGridRows">Rows</label>
-                        <input type="number" id="webcamGridRows" min="1" max="24" value="2" step="1">
-                    </div>
-                    <div class="control-group">
-                        <label for="webcamGridCols">Cols</label>
-                        <input type="number" id="webcamGridCols" min="1" max="36" value="2" step="1">
-                    </div>
-                    <div class="control-group">
-                        <label for="webcamThreshold">Thresh</label>
-                        <div class="range-wrapper">
-                            <input type="range" id="webcamThreshold" min="1" max="80" value="15" step="1">
-                            <span id="thresholdValue">0.15</span>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <label for="webcamSensitivity">Sens</label>
-                        <div class="range-wrapper">
-                            <input type="range" id="webcamSensitivity" min="25" max="1000" value="100" step="25">
-                            <span id="sensitivityValue">1.0</span>
-                        </div>
-                    </div>
-                    <div class="control-group toggle-group-inline">
-                        <label for="webcamStripToggle">Strip</label>
-                        <input type="checkbox" id="webcamStripToggle" class="toggle-input" checked>
-                        <label for="webcamStripToggle" class="toggle-label-small"></label>
-                    </div>
-                    <div class="control-group" id="stripWidthGroup">
-                        <label for="webcamStripWidth">Width</label>
-                        <div class="range-wrapper">
-                            <input type="range" id="webcamStripWidth" min="20" max="50" value="33" step="5">
-                            <span id="stripWidthValue">33%</span>
-                        </div>
-                    </div>
                 </div>
             </div>
         </section>
