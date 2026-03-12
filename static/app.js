@@ -1683,6 +1683,20 @@ function setupWebcamControls() {
         });
     }
 
+    const preview = document.getElementById('webcamPreview');
+    const fsBtn = document.getElementById('camFullscreenBtn');
+    const exitBtn = document.getElementById('camExitFullscreenBtn');
+    if (fsBtn && preview) {
+        fsBtn.addEventListener('click', () => {
+            preview.classList.add('fullscreen');
+        });
+    }
+    if (exitBtn && preview) {
+        exitBtn.addEventListener('click', () => {
+            preview.classList.remove('fullscreen');
+        });
+    }
+
     document.querySelectorAll('#inputModeToggle .mode-btn').forEach(btn => {
         btn.addEventListener('click', () => setInputMode(btn.dataset.mode));
     });
