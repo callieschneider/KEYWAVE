@@ -1021,6 +1021,23 @@ body {
     min-width: 30px;
 }
 
+.webcam-controls input[type="number"] {
+    width: 48px;
+    text-align: center;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    padding: 2px 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.webcam-controls .control-group.disabled {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
 .range-wrapper.slider-modulated {
     position: relative;
 }

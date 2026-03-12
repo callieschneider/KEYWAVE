@@ -80,44 +80,47 @@
             </div>
             <div class="webcam-panel" id="webcamPanel" style="display:none;">
                 <div class="webcam-preview">
-                    <video id="webcamVideo" autoplay playsinline muted></video>
+                    <video id="webcamVideo" autoplay playsinline webkit-playsinline muted></video>
                     <canvas id="webcamOverlay"></canvas>
                 </div>
                 <div class="webcam-controls">
                     <div class="control-group">
-                        <label for="webcamGridRows">Rows</label>
-                        <select id="webcamGridRows">
-                            <option value="1">1</option>
-                            <option value="2" selected>2</option>
-                            <option value="3">3</option>
-                            <option value="4">4</option>
+                        <label for="webcamNoteMode">Mode</label>
+                        <select id="webcamNoteMode">
+                            <option value="zones" selected>Zones</option>
+                            <option value="chords">Chords</option>
+                            <option value="harmonic">Harmonic</option>
                         </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="webcamGridRows">Rows</label>
+                        <input type="number" id="webcamGridRows" min="1" max="24" value="2" step="1">
                     </div>
                     <div class="control-group">
                         <label for="webcamGridCols">Cols</label>
-                        <select id="webcamGridCols">
-                            <option value="1">1</option>
-                            <option value="2" selected>2</option>
-                            <option value="3">3</option>
-                            <option value="4">4</option>
-                        </select>
+                        <input type="number" id="webcamGridCols" min="1" max="36" value="2" step="1">
                     </div>
                     <div class="control-group">
-                        <label for="webcamThreshold">Threshold</label>
+                        <label for="webcamThreshold">Thresh</label>
                         <div class="range-wrapper">
-                            <input type="range" id="webcamThreshold" min="5" max="50" value="15" step="5">
+                            <input type="range" id="webcamThreshold" min="1" max="80" value="15" step="1">
                             <span id="thresholdValue">0.15</span>
                         </div>
                     </div>
                     <div class="control-group">
-                        <label for="webcamSensitivity">Sensitivity</label>
+                        <label for="webcamSensitivity">Sens</label>
                         <div class="range-wrapper">
-                            <input type="range" id="webcamSensitivity" min="50" max="300" value="100" step="25">
+                            <input type="range" id="webcamSensitivity" min="25" max="1000" value="100" step="25">
                             <span id="sensitivityValue">1.0</span>
                         </div>
                     </div>
-                    <div class="control-group">
-                        <label for="webcamStripWidth">Strip</label>
+                    <div class="control-group toggle-group-inline">
+                        <label for="webcamStripToggle">Strip</label>
+                        <input type="checkbox" id="webcamStripToggle" class="toggle-input" checked>
+                        <label for="webcamStripToggle" class="toggle-label-small"></label>
+                    </div>
+                    <div class="control-group" id="stripWidthGroup">
+                        <label for="webcamStripWidth">Width</label>
                         <div class="range-wrapper">
                             <input type="range" id="webcamStripWidth" min="20" max="50" value="33" step="5">
                             <span id="stripWidthValue">33%</span>

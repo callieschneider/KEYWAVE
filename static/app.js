@@ -214,6 +214,8 @@ let settings = {
         sensitivity: 1.0,
         cooldownMs: 150,
         controlStripWidth: 0.33,
+        controlStripEnabled: true,
+        noteMode: 'zones',
         mirror: true
     }
 };
@@ -1021,6 +1023,7 @@ async function initWebcam() {
             audio: false
         });
         webcamVideo.srcObject = webcamStream;
+        await webcamVideo.play().catch(() => {});
 
         webcamStream.getVideoTracks()[0].onended = () => {
             console.warn('Camera disconnected');
@@ -1126,15 +1129,26 @@ function evaluateNoteGrid(motionMap) {
     let triggeredThisFrame = [];
 
     for (const cell of gridCells) {
-        let sum = 0;
-        let count = 0;
+        const pixelValues = [];
         for (let py = cell.y; py < cell.y + cell.h; py++) {
             for (let px = cell.x; px < cell.x + cell.w; px++) {
-                sum += motionMap[py * w + px];
-                count++;
+                pixelValues.push(motionMap[py * w + px]);
             }
         }
-        const rawEnergy = count > 0 ? sum / count : 0;
+
+        let rawEnergy;
+        if (pixelValues.length > 100) {
+            pixelValues.sort((a, b) => b - a);
+            const topCount = Math.max(1, Math.floor(pixelValues.length * 0.25));
+            let topSum = 0;
+            for (let i = 0; i < topCount; i++) topSum += pixelValues[i];
+            rawEnergy = topSum / topCount;
+        } else {
+            let sum = 0;
+            for (let i = 0; i < pixelValues.length; i++) sum += pixelValues[i];
+            rawEnergy = pixelValues.length > 0 ? sum / pixelValues.length : 0;
+        }
+
         cell.motionEnergy = cell.motionEnergy * 0.6 + rawEnergy * 0.4;
 
         if (cell.motionEnergy > settings.webcam.threshold && !cell.isActive &&
@@ -1157,9 +1171,12 @@ function evaluateNoteGrid(motionMap) {
 
 function triggerCellNote(cell) {
     const velocity = mapMotionToVelocity(cell.motionEnergy);
-    playNote(cell.noteData, { velocity, sustained: sustainPedal });
-    updateNoteDisplay(cell.noteData.noteName, cell.noteData);
-    highlightPianoKey(cell.noteData);
+    const notes = Array.isArray(cell.noteData) ? cell.noteData : [cell.noteData];
+    for (const nd of notes) {
+        playNote(nd, { velocity, sustained: sustainPedal, decay: cell.decay || settings.decayTime });
+    }
+    updateNoteDisplay(notes[0].noteName, notes[0]);
+    highlightPianoKey(notes[0]);
 }
 
 function mapMotionToVelocity(energy) {
@@ -1169,92 +1186,262 @@ function mapMotionToVelocity(energy) {
     return minVel + clamped * (maxVel - minVel);
 }
 
+const CONSONANCE_ORDER = [0, 4, 3, 5, 1, 2, 6];
+
+function buildNoteData(semitone, octave) {
+    const freq = C4_FREQ * Math.pow(2, (semitone + (octave - 4) * 12) / 12);
+    return { frequency: freq, noteName: NOTE_NAMES[((semitone % 12) + 12) % 12], octave, semitone: semitone + (octave - 4) * 12 };
+}
+
+function buildDiatonicTriad(intervals, degree, baseOctave) {
+    const root = intervals[degree % intervals.length];
+    const rootOct = baseOctave + Math.floor(degree / intervals.length);
+    const third = intervals[(degree + 2) % intervals.length];
+    const thirdOct = baseOctave + Math.floor((degree + 2) / intervals.length);
+    const fifth = intervals[(degree + 4) % intervals.length];
+    const fifthOct = baseOctave + Math.floor((degree + 4) / intervals.length);
+    return [
+        buildNoteData(root, rootOct),
+        buildNoteData(third, thirdOct),
+        buildNoteData(fifth, fifthOct)
+    ];
+}
+
 function assignNotesToGrid() {
     const rows = settings.webcam.gridRows;
     const cols = settings.webcam.gridCols;
-    const scale = settings.scale;
-    const baseOctave = settings.baseOctave;
-    const intervals = SCALES[scale].intervals;
-
     const canvasW = analysisCanvas ? analysisCanvas.width : 160;
     const canvasH = analysisCanvas ? analysisCanvas.height : 120;
-    const stripPx = Math.round(canvasW * settings.webcam.controlStripWidth);
+    const stripPx = settings.webcam.controlStripEnabled
+        ? Math.round(canvasW * settings.webcam.controlStripWidth)
+        : 0;
     const gridW = canvasW - stripPx;
-
     const cellW = Math.floor(gridW / cols);
     const cellH = Math.floor(canvasH / rows);
+    const geom = { rows, cols, stripPx, cellW, cellH, canvasW, canvasH };
+
+    switch (settings.webcam.noteMode) {
+        case 'zones':    assignZonesMode(geom); break;
+        case 'chords':   assignChordsMode(geom); break;
+        case 'harmonic': assignHarmonicMode(geom); break;
+    }
+}
+
+function makeCell(r, c, geom, noteData, decay) {
+    return {
+        row: r, col: c,
+        x: geom.stripPx + c * geom.cellW,
+        y: r * geom.cellH,
+        w: geom.cellW,
+        h: geom.cellH,
+        noteData,
+        decay: decay || undefined,
+        motionEnergy: 0,
+        lastTriggerTime: 0,
+        isActive: false
+    };
+}
+
+function assignZonesMode(geom) {
+    const { rows, cols } = geom;
+    const intervals = SCALES[settings.scale].intervals;
+    const baseOct = settings.baseOctave;
 
     gridCells = [];
-    let noteIndex = 0;
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-            const degree = noteIndex % intervals.length;
-            const octOffset = Math.floor(noteIndex / intervals.length);
-            const semitone = intervals[degree];
-            const octave = baseOctave + octOffset;
-            const frequency = C4_FREQ * Math.pow(2, (semitone + (octave - 4) * 12) / 12);
-            gridCells.push({
-                row: r, col: c,
-                x: stripPx + c * cellW,
-                y: r * cellH,
-                w: cellW,
-                h: cellH,
-                noteData: {
-                    frequency,
-                    noteName: NOTE_NAMES[semitone % 12],
-                    octave,
-                    semitone: semitone + (octave - 4) * 12
-                },
-                motionEnergy: 0,
-                lastTriggerTime: 0,
-                isActive: false
+            const rowFrac = rows > 1 ? r / (rows - 1) : 0.5;
+            const colFrac = cols > 1 ? c / (cols - 1) : 0.5;
+
+            let noteData, decay;
+
+            if (rowFrac >= 0.75 && colFrac < 0.5) {
+                // Bass zone: octaves 2-3
+                const idx = c + (r - Math.ceil(rows * 0.75)) * Math.ceil(cols * 0.5);
+                const deg = Math.abs(idx) % intervals.length;
+                const oct = 2 + Math.floor(Math.abs(idx) / intervals.length) % 2;
+                noteData = buildNoteData(intervals[deg], oct);
+                decay = 1.2;
+            } else if (rowFrac >= 0.75 && colFrac >= 0.5) {
+                // Rhythm zone: octaves 3-4, short
+                const idx = (c - Math.floor(cols * 0.5)) + (r - Math.ceil(rows * 0.75)) * (cols - Math.floor(cols * 0.5));
+                const deg = Math.abs(idx) % intervals.length;
+                const oct = 3 + Math.floor(Math.abs(idx) / intervals.length) % 2;
+                noteData = buildNoteData(intervals[deg], oct);
+                decay = 0.08;
+            } else if (rowFrac < 0.25 && colFrac < 0.5) {
+                // Chords zone: triads, octaves 3-4
+                const idx = c + r * Math.ceil(cols * 0.5);
+                const deg = idx % intervals.length;
+                noteData = buildDiatonicTriad(intervals, deg, baseOct);
+                decay = settings.decayTime;
+            } else if (rowFrac < 0.25 && colFrac >= 0.5) {
+                // Atmosphere zone: octaves 5-6, long
+                const idx = (c - Math.floor(cols * 0.5)) + r * (cols - Math.floor(cols * 0.5));
+                const deg = Math.abs(idx) % intervals.length;
+                const oct = 5 + Math.floor(Math.abs(idx) / intervals.length) % 2;
+                noteData = buildNoteData(intervals[deg], oct);
+                decay = 2.0;
+            } else {
+                // Melody zone: octaves 3-5
+                const mRows = rows - Math.ceil(rows * 0.25) - Math.floor(rows * 0.25);
+                const mR = r - Math.ceil(rows * 0.25);
+                const idx = c + mR * cols;
+                const deg = Math.abs(idx) % intervals.length;
+                const oct = 3 + Math.floor(Math.abs(idx) / intervals.length) % 3;
+                noteData = buildNoteData(intervals[deg], oct);
+                decay = undefined;
+            }
+
+            gridCells.push(makeCell(r, c, geom, noteData, decay));
+        }
+    }
+}
+
+function assignChordsMode(geom) {
+    const { rows, cols } = geom;
+    const intervals = SCALES[settings.scale].intervals;
+    const baseOct = settings.baseOctave;
+
+    gridCells = [];
+    for (let r = 0; r < rows; r++) {
+        const cycleLen = intervals.length;
+        const baseRow = r % (cycleLen * 4);
+        const tier = Math.floor(baseRow / cycleLen);
+        const chordIdx = baseRow % cycleLen;
+
+        let triad = buildDiatonicTriad(intervals, chordIdx, baseOct);
+
+        if (tier === 1) {
+            const [root, third, fifth] = triad;
+            triad = [third, fifth, { ...root, octave: root.octave + 1, frequency: root.frequency * 2 }];
+        } else if (tier === 2) {
+            const [root, third, fifth] = triad;
+            triad = [fifth, { ...root, octave: root.octave + 1, frequency: root.frequency * 2 }, { ...third, octave: third.octave + 1, frequency: third.frequency * 2 }];
+        } else if (tier === 3) {
+            const seventh = intervals[(chordIdx + 6) % intervals.length];
+            const seventhOct = baseOct + Math.floor((chordIdx + 6) / intervals.length);
+            triad.push(buildNoteData(seventh, seventhOct));
+        }
+
+        for (let c = 0; c < cols; c++) {
+            const spread = cols > 1 ? c / (cols - 1) : 0;
+            const voiced = triad.map((n, i) => {
+                let octShift = 0;
+                if (i === 0) octShift = -Math.round(spread);
+                if (i === triad.length - 1) octShift = Math.round(spread);
+                const newOct = n.octave + octShift;
+                const freq = n.frequency * Math.pow(2, octShift);
+                return { ...n, octave: newOct, frequency: freq };
             });
-            noteIndex++;
+
+            gridCells.push(makeCell(r, c, geom, voiced));
+        }
+    }
+}
+
+function assignHarmonicMode(geom) {
+    const { rows, cols } = geom;
+    const intervals = SCALES[settings.scale].intervals;
+    const baseOct = settings.baseOctave;
+
+    gridCells = [];
+    for (let r = 0; r < rows; r++) {
+        const complexity = rows > 1 ? 1 - (r / (rows - 1)) : 0.5;
+
+        for (let c = 0; c < cols; c++) {
+            const colFrac = cols > 1 ? c / (cols - 1) : 0;
+            const conIdx = Math.min(
+                CONSONANCE_ORDER.length - 1,
+                Math.round(colFrac * (CONSONANCE_ORDER.length - 1))
+            );
+            const rootDeg = CONSONANCE_ORDER[conIdx];
+
+            const notes = [];
+            const root = intervals[rootDeg % intervals.length];
+            const rootOct = baseOct + Math.floor(rootDeg / intervals.length);
+            notes.push(buildNoteData(root, rootOct));
+
+            const fifth = intervals[(rootDeg + 4) % intervals.length];
+            const fifthOct = baseOct + Math.floor((rootDeg + 4) / intervals.length);
+            notes.push(buildNoteData(fifth, fifthOct));
+
+            if (complexity >= 0.25) {
+                const third = intervals[(rootDeg + 2) % intervals.length];
+                const thirdOct = baseOct + Math.floor((rootDeg + 2) / intervals.length);
+                notes.push(buildNoteData(third, thirdOct));
+            }
+
+            if (complexity >= 0.50) {
+                const seventh = intervals[(rootDeg + 6) % intervals.length];
+                const seventhOct = baseOct + Math.floor((rootDeg + 6) / intervals.length);
+                notes.push(buildNoteData(seventh, seventhOct));
+            }
+
+            if (complexity >= 0.75) {
+                const ninth = intervals[(rootDeg + 1) % intervals.length];
+                const ninthOct = baseOct + Math.floor((rootDeg + 1) / intervals.length) + 1;
+                notes.push(buildNoteData(ninth, ninthOct));
+            }
+
+            if (complexity >= 0.95) {
+                const eleventh = intervals[(rootDeg + 3) % intervals.length];
+                const eleventhOct = baseOct + Math.floor((rootDeg + 3) / intervals.length) + 1;
+                notes.push(buildNoteData(eleventh, eleventhOct));
+            }
+
+            const noteData = notes.length === 1 ? notes[0] : notes;
+            gridCells.push(makeCell(r, c, geom, noteData));
         }
     }
 }
 
 function evaluateControlStrip(motionMap) {
-    if (!analysisCanvas) return;
+    if (!settings.webcam.controlStripEnabled || !analysisCanvas) return;
     const w = analysisCanvas.width;
     const h = analysisCanvas.height;
     const stripEnd = Math.round(w * settings.webcam.controlStripWidth);
     const laneMid = Math.round(stripEnd / 2);
-    const minMotionForPresence = 0.05;
+    const minRowMotion = 0.02;
 
-    let susWeightedY = 0, susTotalMotion = 0;
-    let swlWeightedY = 0, swlTotalMotion = 0;
+    function scanLaneTopEdge(xStart, xEnd) {
+        let topEdgeRow = -1;
+        let totalMotion = 0;
+        const laneWidth = xEnd - xStart;
+        if (laneWidth <= 0) return -1;
 
-    for (let py = 0; py < h; py++) {
-        for (let px = 0; px < laneMid; px++) {
-            const val = motionMap[py * w + px];
-            susWeightedY += val * py;
-            susTotalMotion += val;
+        for (let py = 0; py < h; py++) {
+            let rowSum = 0;
+            for (let px = xStart; px < xEnd; px++) {
+                rowSum += motionMap[py * w + px];
+            }
+            const rowAvg = rowSum / laneWidth;
+            totalMotion += rowAvg;
+            if (rowAvg > minRowMotion && topEdgeRow === -1) {
+                topEdgeRow = py;
+            }
         }
-        for (let px = laneMid; px < stripEnd; px++) {
-            const val = motionMap[py * w + px];
-            swlWeightedY += val * py;
-            swlTotalMotion += val;
-        }
+
+        if (topEdgeRow === -1 || totalMotion / h < 0.005) return -1;
+        return 1 - (topEdgeRow / h);
     }
 
-    const susCellCount = laneMid * h;
-    const swlCellCount = (stripEnd - laneMid) * h;
-    const susAvg = susCellCount > 0 ? susTotalMotion / susCellCount : 0;
-    const swlAvg = swlCellCount > 0 ? swlTotalMotion / swlCellCount : 0;
+    const susDetected = scanLaneTopEdge(0, laneMid);
+    const swlDetected = scanLaneTopEdge(laneMid, stripEnd);
 
-    if (susAvg > minMotionForPresence && susTotalMotion > 0) {
-        const centroidY = susWeightedY / susTotalMotion;
-        controlStripState.sustainLevel = 1 - (centroidY / h);
+    const RISE_SPEED = 0.3;
+    const HOLD_DECAY = 0.005;
+
+    if (susDetected >= 0) {
+        controlStripState.sustainLevel += (susDetected - controlStripState.sustainLevel) * RISE_SPEED;
     } else {
-        controlStripState.sustainLevel = Math.max(0, controlStripState.sustainLevel - 0.05);
+        controlStripState.sustainLevel = Math.max(0, controlStripState.sustainLevel - HOLD_DECAY);
     }
 
-    if (swlAvg > minMotionForPresence && swlTotalMotion > 0) {
-        const centroidY = swlWeightedY / swlTotalMotion;
-        controlStripState.swellLevel = 1 - (centroidY / h);
+    if (swlDetected >= 0) {
+        controlStripState.swellLevel += (swlDetected - controlStripState.swellLevel) * RISE_SPEED;
     } else {
-        controlStripState.swellLevel = Math.max(0, controlStripState.swellLevel - 0.05);
+        controlStripState.swellLevel = Math.max(0, controlStripState.swellLevel - HOLD_DECAY);
     }
 
     const sl = controlStripState.sustainLevel;
@@ -1362,42 +1549,59 @@ function renderOverlay() {
     const scaleX = oc.width / (analysisCanvas ? analysisCanvas.width : 160);
     const scaleY = oc.height / (analysisCanvas ? analysisCanvas.height : 120);
 
-    const stripPx = Math.round((analysisCanvas ? analysisCanvas.width : 160) * settings.webcam.controlStripWidth);
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(stripPx * scaleX, 0);
-    ctx.lineTo(stripPx * scaleX, oc.height);
-    ctx.stroke();
+    if (settings.webcam.controlStripEnabled) {
+        const stripPx = Math.round((analysisCanvas ? analysisCanvas.width : 160) * settings.webcam.controlStripWidth);
+        const laneMidPx = Math.round(stripPx / 2);
 
-    const laneMidPx = Math.round(stripPx / 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(laneMidPx * scaleX, 0);
-    ctx.lineTo(laneMidPx * scaleX, oc.height);
-    ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(stripPx * scaleX, 0);
+        ctx.lineTo(stripPx * scaleX, oc.height);
+        ctx.stroke();
 
-    const susH = (1 - controlStripState.sustainLevel) * oc.height;
-    const susColor = controlStripState.sustainOn ? 'rgba(236,72,153,0.4)' : 'rgba(236,72,153,0.15)';
-    ctx.fillStyle = susColor;
-    ctx.fillRect(0, susH, laneMidPx * scaleX, oc.height - susH);
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(laneMidPx * scaleX, 0);
+        ctx.lineTo(laneMidPx * scaleX, oc.height);
+        ctx.stroke();
 
-    const swlH = (1 - controlStripState.swellLevel) * oc.height;
-    ctx.fillStyle = `rgba(168,85,247,${0.1 + controlStripState.swellLevel * 0.3})`;
-    ctx.fillRect(laneMidPx * scaleX, swlH, (stripPx - laneMidPx) * scaleX, oc.height - swlH);
+        const susH = (1 - controlStripState.sustainLevel) * oc.height;
+        const susColor = controlStripState.sustainOn ? 'rgba(236,72,153,0.4)' : 'rgba(236,72,153,0.15)';
+        ctx.fillStyle = susColor;
+        ctx.fillRect(0, susH, laneMidPx * scaleX, oc.height - susH);
 
-    ctx.save();
-    ctx.scale(-1, 1);
-    ctx.translate(-oc.width, 0);
-    ctx.font = '10px JetBrains Mono, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(236,72,153,0.7)';
-    ctx.fillText('SUS', oc.width - (laneMidPx * scaleX / 2), 4);
-    ctx.fillStyle = 'rgba(168,85,247,0.7)';
-    ctx.fillText('SWL', oc.width - ((laneMidPx + (stripPx - laneMidPx) / 2) * scaleX), 4);
-    ctx.restore();
+        const swlH = (1 - controlStripState.swellLevel) * oc.height;
+        ctx.fillStyle = `rgba(168,85,247,${0.1 + controlStripState.swellLevel * 0.3})`;
+        ctx.fillRect(laneMidPx * scaleX, swlH, (stripPx - laneMidPx) * scaleX, oc.height - swlH);
+
+        // Level indicator lines
+        ctx.strokeStyle = 'rgba(236,72,153,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, susH);
+        ctx.lineTo(laneMidPx * scaleX, susH);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(168,85,247,0.9)';
+        ctx.beginPath();
+        ctx.moveTo(laneMidPx * scaleX, swlH);
+        ctx.lineTo(stripPx * scaleX, swlH);
+        ctx.stroke();
+
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.translate(-oc.width, 0);
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(236,72,153,0.7)';
+        ctx.fillText('SUS', oc.width - (laneMidPx * scaleX / 2), 4);
+        ctx.fillStyle = 'rgba(168,85,247,0.7)';
+        ctx.fillText('SWL', oc.width - ((laneMidPx + (stripPx - laneMidPx) / 2) * scaleX), 4);
+        ctx.restore();
+    }
 
     for (const cell of gridCells) {
         const cx = cell.x * scaleX;
@@ -1415,17 +1619,21 @@ function renderOverlay() {
         ctx.lineWidth = 1;
         ctx.strokeRect(cx, cy, cw, ch);
 
-        ctx.save();
-        ctx.scale(-1, 1);
-        ctx.translate(-oc.width, 0);
-        const label = cell.noteData.noteName + cell.noteData.octave;
-        ctx.font = '12px JetBrains Mono, monospace';
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const mirroredX = oc.width - (cx + cw / 2);
-        ctx.fillText(label, mirroredX, cy + ch / 2);
-        ctx.restore();
+        if (cell.w * scaleX > 24 && cell.h * scaleY > 16) {
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.translate(-oc.width, 0);
+            const notes = Array.isArray(cell.noteData) ? cell.noteData : [cell.noteData];
+            const label = notes[0].noteName + notes[0].octave;
+            const fontSize = Math.max(8, Math.min(12, cell.w * scaleX / 4));
+            ctx.font = `${fontSize}px JetBrains Mono, monospace`;
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const mirroredX = oc.width - (cx + cw / 2);
+            ctx.fillText(label, mirroredX, cy + ch / 2);
+            ctx.restore();
+        }
     }
 }
 
@@ -1459,8 +1667,7 @@ function setupWebcamControls() {
     webcamVideo = document.getElementById('webcamVideo');
     webcamOverlay = document.getElementById('webcamOverlay');
 
-    const toggleBtns = document.querySelectorAll('#inputModeToggle .mode-btn');
-    toggleBtns.forEach(btn => {
+    document.querySelectorAll('#inputModeToggle .mode-btn').forEach(btn => {
         btn.addEventListener('click', () => setInputMode(btn.dataset.mode));
     });
 
@@ -1471,10 +1678,19 @@ function setupWebcamControls() {
         });
     }
 
+    const noteModeEl = document.getElementById('webcamNoteMode');
+    if (noteModeEl) {
+        noteModeEl.addEventListener('change', (e) => {
+            settings.webcam.noteMode = e.target.value;
+            if (inputMode === 'webcam') assignNotesToGrid();
+        });
+    }
+
     const gridRowsEl = document.getElementById('webcamGridRows');
     if (gridRowsEl) {
         gridRowsEl.addEventListener('change', (e) => {
-            settings.webcam.gridRows = parseInt(e.target.value);
+            settings.webcam.gridRows = Math.max(1, Math.min(24, parseInt(e.target.value) || 2));
+            e.target.value = settings.webcam.gridRows;
             if (inputMode === 'webcam') assignNotesToGrid();
         });
     }
@@ -1482,7 +1698,8 @@ function setupWebcamControls() {
     const gridColsEl = document.getElementById('webcamGridCols');
     if (gridColsEl) {
         gridColsEl.addEventListener('change', (e) => {
-            settings.webcam.gridCols = parseInt(e.target.value);
+            settings.webcam.gridCols = Math.max(1, Math.min(36, parseInt(e.target.value) || 2));
+            e.target.value = settings.webcam.gridCols;
             if (inputMode === 'webcam') assignNotesToGrid();
         });
     }
@@ -1500,6 +1717,22 @@ function setupWebcamControls() {
         sensitivityEl.addEventListener('input', (e) => {
             settings.webcam.sensitivity = parseInt(e.target.value) / 100;
             document.getElementById('sensitivityValue').textContent = settings.webcam.sensitivity.toFixed(1);
+        });
+    }
+
+    const stripToggle = document.getElementById('webcamStripToggle');
+    if (stripToggle) {
+        stripToggle.addEventListener('change', (e) => {
+            settings.webcam.controlStripEnabled = e.target.checked;
+            const widthGroup = document.getElementById('stripWidthGroup');
+            if (widthGroup) widthGroup.classList.toggle('disabled', !e.target.checked);
+            if (!e.target.checked) {
+                controlStripState = { sustainLevel: 0, sustainOn: false, swellLevel: 0 };
+                sustainPedal = false;
+                releaseAllSustainedVoices();
+                restoreBaseEffects();
+            }
+            if (inputMode === 'webcam') assignNotesToGrid();
         });
     }
 
@@ -2381,11 +2614,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     applyEffectPreset(settings.effectPreset);
     
-    document.body.addEventListener('click', () => {
+    function resumeAudioOnGesture() {
         if (!audioContext) {
             initAudio();
         } else if (audioContext.state === 'suspended') {
             audioContext.resume();
         }
-    }, { once: true });
+    }
+    document.body.addEventListener('click', resumeAudioOnGesture, { once: true });
+    document.body.addEventListener('touchstart', resumeAudioOnGesture, { once: true });
 });
