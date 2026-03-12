@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>KEYWAVE</title>
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -81,8 +81,12 @@
             </div>
             <div class="webcam-panel" id="webcamPanel" style="display:none;">
                 <div class="webcam-preview" id="webcamPreview">
-                    <video id="webcamVideo" autoplay playsinline webkit-playsinline muted></video>
-                    <canvas id="webcamOverlay"></canvas>
+                    <div class="cam-video-area">
+                        <video id="webcamVideo" autoplay playsinline webkit-playsinline muted></video>
+                        <canvas id="webcamOverlay"></canvas>
+                        <button class="cam-fullscreen-btn" id="camFullscreenBtn" title="Fullscreen">[ ]</button>
+                        <button class="cam-exit-fullscreen-btn" id="camExitFullscreenBtn" title="Exit Fullscreen">✕</button>
+                    </div>
                     <div class="webcam-controls" id="webcamControls">
                         <div class="control-group">
                             <label for="webcamNoteMode">Mode</label>

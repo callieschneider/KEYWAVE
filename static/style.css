@@ -970,8 +970,12 @@ body {
     position: relative;
     width: 100%;
     background: #000;
-    display: flex;
-    flex-direction: column;
+}
+
+.webcam-preview .cam-video-area {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4/3;
 }
 
 .webcam-preview video,
@@ -980,7 +984,7 @@ body {
     top: 0;
     left: 0;
     width: 100%;
-    height: calc(100% - 42px);
+    height: 100%;
     object-fit: cover;
     transform: scaleX(-1);
 }
@@ -992,23 +996,12 @@ body {
 .webcam-controls {
     position: relative;
     z-index: 5;
-    order: 2;
     display: flex;
     flex-wrap: wrap;
     gap: var(--gap-sm) var(--gap-md);
     padding: 8px 12px;
     border-top: 1px solid var(--border-color);
     background: var(--bg-secondary, #1a1a2e);
-    min-height: 42px;
-}
-
-.webcam-preview:not(.fullscreen) {
-    aspect-ratio: 4/3;
-}
-
-.webcam-preview:not(.fullscreen) video,
-.webcam-preview:not(.fullscreen) canvas {
-    height: calc(100% - 42px);
 }
 
 .cam-fullscreen-btn {
@@ -1032,7 +1025,7 @@ body {
     position: absolute;
     top: 12px;
     right: 12px;
-    z-index: 10;
+    z-index: 30;
     background: rgba(0,0,0,0.6);
     border: 1px solid rgba(255,255,255,0.3);
     border-radius: 50%;
@@ -1054,20 +1047,18 @@ body {
     height: 100vh;
     z-index: 9999;
     border-radius: 0;
-    display: flex;
-    flex-direction: column;
     touch-action: none;
     overflow: hidden;
 }
 
+.webcam-preview.fullscreen .cam-video-area {
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+}
+
 .webcam-preview.fullscreen video,
 .webcam-preview.fullscreen canvas {
-    position: absolute;
-    overflow: hidden;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: calc(100% - 42px);
     object-fit: contain;
 }
 
@@ -1076,6 +1067,7 @@ body {
     bottom: 0;
     left: 0;
     right: 0;
+    z-index: 20;
     background: rgba(10, 10, 20, 0.85);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);

@@ -1680,7 +1680,7 @@ function setupWebcamControls() {
         exitBtn.addEventListener('click', () => {
             preview.classList.remove('fullscreen');
             camZoomLevel = 1;
-            applyCamZoom(preview);
+            applyCamZoom();
         });
     }
 
@@ -1690,6 +1690,7 @@ function setupWebcamControls() {
     let pinchStartZoom = 1;
     const MIN_ZOOM = 1;
     const MAX_ZOOM = 5;
+    const videoArea = preview ? preview.querySelector('.cam-video-area') : null;
 
     function getPinchDist(touches) {
         const dx = touches[0].clientX - touches[1].clientX;
@@ -1697,19 +1698,23 @@ function setupWebcamControls() {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    function applyCamZoom(el) {
-        const vid = el.querySelector('video');
-        const cvs = el.querySelector('canvas');
+    function applyCamZoom() {
+        if (!videoArea) return;
+        const vid = videoArea.querySelector('video');
+        const cvs = videoArea.querySelector('canvas');
         const scale = `scale(${camZoomLevel})`;
-        if (vid) vid.style.transformOrigin = 'center center';
-        if (cvs) cvs.style.transformOrigin = 'center center';
         const mirror = settings.webcam.mirror ? 'scaleX(-1) ' : '';
-        if (vid) vid.style.transform = mirror + scale;
-        if (cvs) cvs.style.transform = mirror + scale;
+        if (vid) { vid.style.transformOrigin = 'center center'; vid.style.transform = mirror + scale; }
+        if (cvs) { cvs.style.transformOrigin = 'center center'; cvs.style.transform = mirror + scale; }
     }
 
-    if (preview) {
-        preview.addEventListener('touchstart', (e) => {
+    // Prevent iOS Safari native pinch zoom globally
+    document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('gestureend', (e) => e.preventDefault(), { passive: false });
+
+    if (videoArea) {
+        videoArea.addEventListener('touchstart', (e) => {
             if (!preview.classList.contains('fullscreen')) return;
             if (e.touches.length === 2) {
                 e.preventDefault();
@@ -1718,14 +1723,14 @@ function setupWebcamControls() {
             }
         }, { passive: false });
 
-        preview.addEventListener('touchmove', (e) => {
+        videoArea.addEventListener('touchmove', (e) => {
             if (!preview.classList.contains('fullscreen')) return;
             if (e.touches.length === 2) {
                 e.preventDefault();
                 const dist = getPinchDist(e.touches);
                 const ratio = dist / pinchStartDist;
                 camZoomLevel = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom * ratio));
-                applyCamZoom(preview);
+                applyCamZoom();
             }
         }, { passive: false });
     }
