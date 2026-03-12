@@ -1019,10 +1019,20 @@ function updatePlaybackUI() {
 
 async function initWebcam() {
     try {
-        webcamStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: settings.webcam.facingMode === 'environment' ? { exact: 'environment' } : 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        const facing = settings.webcam.facingMode;
+        let constraints = {
+            video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 } },
             audio: false
-        });
+        };
+        try {
+            webcamStream = await navigator.mediaDevices.getUserMedia(
+                facing === 'environment'
+                    ? { video: { facingMode: { exact: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false }
+                    : constraints
+            );
+        } catch (exactErr) {
+            webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+        }
         webcamVideo.srcObject = webcamStream;
         await webcamVideo.play().catch(() => {});
 
@@ -1679,18 +1689,42 @@ function setupWebcamControls() {
     if (exitBtn && preview) {
         exitBtn.addEventListener('click', () => {
             preview.classList.remove('fullscreen');
-            camZoomLevel = 1;
-            applyCamZoom();
+            camZoomLevel = camZoomMin;
+            applyCamHardwareZoom();
         });
     }
 
-    // Pinch-to-zoom in fullscreen
+    // Pinch-to-zoom: real camera zoom via MediaStreamTrack constraints
     let camZoomLevel = 1;
+    let camZoomMin = 1;
+    let camZoomMax = 1;
+    let camZoomSupported = false;
     let pinchStartDist = 0;
     let pinchStartZoom = 1;
-    const MIN_ZOOM = 1;
-    const MAX_ZOOM = 5;
-    const videoArea = preview ? preview.querySelector('.cam-video-area') : null;
+
+    function updateCamZoomCapabilities() {
+        camZoomSupported = false;
+        if (!webcamStream) return;
+        const track = webcamStream.getVideoTracks()[0];
+        if (!track) return;
+        try {
+            const caps = track.getCapabilities();
+            if (caps.zoom) {
+                camZoomSupported = true;
+                camZoomMin = caps.zoom.min || 1;
+                camZoomMax = caps.zoom.max || 1;
+                const s = track.getSettings();
+                camZoomLevel = s.zoom || camZoomMin;
+            }
+        } catch (e) {}
+    }
+
+    function applyCamHardwareZoom() {
+        if (!camZoomSupported || !webcamStream) return;
+        const track = webcamStream.getVideoTracks()[0];
+        if (!track) return;
+        track.applyConstraints({ advanced: [{ zoom: camZoomLevel }] }).catch(() => {});
+    }
 
     function getPinchDist(touches) {
         const dx = touches[0].clientX - touches[1].clientX;
@@ -1698,26 +1732,18 @@ function setupWebcamControls() {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    function applyCamZoom() {
-        if (!videoArea) return;
-        const vid = videoArea.querySelector('video');
-        const cvs = videoArea.querySelector('canvas');
-        const scale = `scale(${camZoomLevel})`;
-        const mirror = settings.webcam.mirror ? 'scaleX(-1) ' : '';
-        if (vid) { vid.style.transformOrigin = 'center center'; vid.style.transform = mirror + scale; }
-        if (cvs) { cvs.style.transformOrigin = 'center center'; cvs.style.transform = mirror + scale; }
-    }
-
-    // Prevent iOS Safari native pinch zoom globally
+    // Prevent iOS Safari native pinch zoom
     document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
     document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
     document.addEventListener('gestureend', (e) => e.preventDefault(), { passive: false });
 
+    const videoArea = preview ? preview.querySelector('.cam-video-area') : null;
     if (videoArea) {
         videoArea.addEventListener('touchstart', (e) => {
             if (!preview.classList.contains('fullscreen')) return;
             if (e.touches.length === 2) {
                 e.preventDefault();
+                updateCamZoomCapabilities();
                 pinchStartDist = getPinchDist(e.touches);
                 pinchStartZoom = camZoomLevel;
             }
@@ -1729,8 +1755,8 @@ function setupWebcamControls() {
                 e.preventDefault();
                 const dist = getPinchDist(e.touches);
                 const ratio = dist / pinchStartDist;
-                camZoomLevel = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom * ratio));
-                applyCamZoom();
+                camZoomLevel = Math.max(camZoomMin, Math.min(camZoomMax, pinchStartZoom * ratio));
+                applyCamHardwareZoom();
             }
         }, { passive: false });
     }
@@ -2685,10 +2711,11 @@ document.addEventListener('DOMContentLoaded', () => {
     function resumeAudioOnGesture() {
         if (!audioContext) {
             initAudio();
-        } else if (audioContext.state === 'suspended') {
+        }
+        if (audioContext && audioContext.state === 'suspended') {
             audioContext.resume();
         }
     }
-    document.body.addEventListener('click', resumeAudioOnGesture, { once: true });
-    document.body.addEventListener('touchstart', resumeAudioOnGesture, { once: true });
+    document.body.addEventListener('click', resumeAudioOnGesture);
+    document.body.addEventListener('touchstart', resumeAudioOnGesture);
 });
