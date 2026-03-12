@@ -1679,7 +1679,55 @@ function setupWebcamControls() {
     if (exitBtn && preview) {
         exitBtn.addEventListener('click', () => {
             preview.classList.remove('fullscreen');
+            camZoomLevel = 1;
+            applyCamZoom(preview);
         });
+    }
+
+    // Pinch-to-zoom in fullscreen
+    let camZoomLevel = 1;
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1;
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 5;
+
+    function getPinchDist(touches) {
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function applyCamZoom(el) {
+        const vid = el.querySelector('video');
+        const cvs = el.querySelector('canvas');
+        const scale = `scale(${camZoomLevel})`;
+        if (vid) vid.style.transformOrigin = 'center center';
+        if (cvs) cvs.style.transformOrigin = 'center center';
+        const mirror = settings.webcam.mirror ? 'scaleX(-1) ' : '';
+        if (vid) vid.style.transform = mirror + scale;
+        if (cvs) cvs.style.transform = mirror + scale;
+    }
+
+    if (preview) {
+        preview.addEventListener('touchstart', (e) => {
+            if (!preview.classList.contains('fullscreen')) return;
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                pinchStartDist = getPinchDist(e.touches);
+                pinchStartZoom = camZoomLevel;
+            }
+        }, { passive: false });
+
+        preview.addEventListener('touchmove', (e) => {
+            if (!preview.classList.contains('fullscreen')) return;
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                const dist = getPinchDist(e.touches);
+                const ratio = dist / pinchStartDist;
+                camZoomLevel = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom * ratio));
+                applyCamZoom(preview);
+            }
+        }, { passive: false });
     }
 
     document.querySelectorAll('#inputModeToggle .mode-btn').forEach(btn => {
